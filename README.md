@@ -1,2 +1,2 @@
 # A.I.D
-A.I.E (Auditor Inteligente de Dispapeles) es un robot automatizador de auditorías documentales el cuál está construido con Python nativo y utiliza un entorno virtual llamado "venv".
+El desarrollo de A.I.D. (Auditor Inteligente de Dispapeles) surge con el propósito de facilitar y optimizar el trabajo de las analistas, agilizando los procesos de auditoría documental y reduciendo al máximo los tiempos empleados en su ejecución.

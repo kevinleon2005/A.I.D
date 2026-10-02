@@ -1,6 +1,5 @@
 ﻿# GuiMenu.py
 import os
-import re
 import shutil
 import sys
 import threading
@@ -8,17 +7,11 @@ import unicodedata
 import tkinter as tk
 from tkinter import filedialog, ttk, messagebox
 
-try:
-    from openpyxl import load_workbook
-except Exception:
-    load_workbook = None
-
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 BASE_DIR = os.path.dirname(THIS_DIR)
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
 IMPLEMENTACIONES_ROOT = r"Z:\IMPLEMENTACIONES"
-AUDIT_EXCEL_PATH = os.path.join(BASE_DIR, "Plantillas", "PMO-ER-005.xlsx")
 REPORT_TEMPLATE_PATH = os.path.join(BASE_DIR, "Plantillas", "PMO-ER-005.xlsx")
 
 ALLOWED_SERVICES = (
@@ -61,50 +54,49 @@ def _normalize_text(value):
     return text
 
 def _load_audit_tasks():
-    if not os.path.isfile(AUDIT_EXCEL_PATH) or load_workbook is None:
-        return []
+    section_titles = (
+        ("1", "COMERCIAL"),
+        ("2", "PRELIMINARES"),
+        ("3", "PRUEBAS"),
+        ("4", "CONFIGURACIÓN Y PARAMETRIZACIÓN"),
+        ("5", "SALIDA EN VIVO"),
+        ("6", "ACOMPAÑAMIENTO Y CIERRE"),
+    )
+    sections = {title: {"code": code, "title": title, "folder": "", "items": []} for code, title in section_titles}
+    seen_items = {title: set() for _, title in section_titles}
 
-    try:
-        workbook = load_workbook(AUDIT_EXCEL_PATH, read_only=True, data_only=True)
-        sheet_name = "PMO-ER-005" if "PMO-ER-005" in workbook.sheetnames else workbook.sheetnames[0]
-        sheet = workbook[sheet_name]
-        sections = []
-        current_section = None
-        for row in sheet.iter_rows(min_row=10, max_row=45, min_col=2, max_col=4, values_only=True):
-            first_value, second_value, description = row
-            first_text = str(first_value).strip() if first_value is not None else ""
-            second_text = str(second_value).strip() if second_value is not None else ""
-            if re.match(r"^\d+(\.\d+)?$", second_text):
-                code_text, folder_text = second_text, first_text
-            else:
-                code_text, folder_text = first_text, second_text
-            description_text = " ".join(str(description or "").split())
-            if code_text.isdigit() and description_text:
-                section_titles = {
-                    "1": "COMERCIAL",
-                    "2": "PRELIMINARES",
-                    "3": "PRUEBAS",
-                    "4": "CONFIGURACIÓN Y PARAMETRIZACIÓN",
-                    "5": "SALIDA EN VIVO",
-                    "6": "ACOMPAÑAMIENTO Y CIERRE",
-                }
-                current_section = {
-                    "code": code_text,
-                    "title": section_titles.get(code_text, description_text),
-                    "folder": folder_text,
+    # Los catálogos del proyecto son la fuente para mostrar requisitos; no dependen
+    # de que exista la plantilla Excel ni de que openpyxl esté instalado.
+    for module_name in SERVICE_FLOW_MODULES.values():
+        try:
+            module = __import__(module_name, fromlist=["REQUIREMENT_CATALOG"])
+        except Exception:
+            continue
+        for requirement in getattr(module, "REQUIREMENT_CATALOG", ()):
+            title = str(requirement.get("section") or "").strip()
+            if not title:
+                continue
+            section = sections.get(title)
+            if section is None:
+                section = {
+                    "code": str(len(sections) + 1),
+                    "title": title,
+                    "folder": "",
                     "items": [],
                 }
-                sections.append(current_section)
-            elif re.match(r"^\d+\.\d+$", code_text) and description_text and current_section is not None:
-                current_section["items"].append({
-                    "code": code_text,
-                    "title": description_text,
-                    "folder": folder_text,
-                })
-        workbook.close()
-        return sections
-    except Exception as exc:
-        return [{"code": "", "title": f"No se pudo leer la auditoría desde Excel: {exc}", "folder": "", "items": []}]
+                sections[title] = section
+                seen_items[title] = set()
+            item = {
+                "code": str(requirement.get("id", "")),
+                "title": str(requirement.get("name", "")),
+                "folder": str(requirement.get("folder", "")),
+            }
+            item_key = (item["code"], item["title"], item["folder"])
+            if item_key not in seen_items[title]:
+                section["items"].append(item)
+                seen_items[title].add(item_key)
+
+    return list(sections.values())
 
 
 def _match_client_score(folder_name, client_input):
@@ -399,7 +391,6 @@ class App(tk.Tk):
 
         self._log("Sistema listo.")
         self._log(f"Ruta compartida: {IMPLEMENTACIONES_ROOT}")
-        self._log(f"Archivo de auditoría: {AUDIT_EXCEL_PATH}")
 
     def _populate_audit_tree(self):
         for section in self.audit_tasks:
@@ -600,25 +591,24 @@ class App(tk.Tk):
             if result.get("path") and requirement_id != "4.1":
                 continue
             if requirement_id == "4.1":
-                loaded_paths = []
-                for evidence_type in ("archivo", "correo"):
-                    prompt_requirement = dict(requirement)
-                    prompt_requirement["name"] = f"{requirement.get('name', '')} ({evidence_type})"
-                    response = self._prompt_missing_requirement(prompt_requirement, service_flow)
-                    if response is None:
-                        break
-                    if response.get("cancel_audit"):
-                        raise AuditCancelled()
-                    if response.get("not_applicable"):
-                        manual_overrides[requirement_id] = {
-                            "not_applicable": True,
-                            "observation": response.get("observation") or "No aplica para este cliente.",
-                        }
-                        break
-                    if response.get("path"):
-                        loaded_paths.append(_store_manual_evidence(client_path, requirement, response["path"]))
-                if len(loaded_paths) == 2 and requirement_id not in manual_overrides:
-                    manual_overrides[requirement_id] = {"paths": loaded_paths}
+                prompt_requirement = dict(requirement)
+                prompt_requirement["name"] = "Correo PMO-ER-011 CyP (.eml o .msg con Excel adjunto)"
+                response = self._prompt_missing_requirement(prompt_requirement, service_flow)
+                if response is None:
+                    continue
+                if response.get("cancel_audit"):
+                    raise AuditCancelled()
+                if response.get("not_applicable"):
+                    manual_overrides[requirement_id] = {
+                        "not_applicable": True,
+                        "observation": response.get("observation") or "No aplica para este cliente.",
+                    }
+                elif response.get("path"):
+                    stored_path = _store_manual_evidence(client_path, requirement, response["path"])
+                    manual_overrides[requirement_id] = {
+                        "path": stored_path,
+                        "observation": f"Correo válido con Excel adjunto: {stored_path}",
+                    }
                 continue
             response = self._prompt_missing_requirement(requirement, service_flow)
             if response is None:

@@ -7,7 +7,7 @@ Instalar python 3.14.7 (Kevin suministra ejuecutable para instalación) El admin
 py -3.14 -m venv .venv
 
 // Instalar las dependencias necesarias
-python -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
 
 // Comando para ejecutar la aplicación de escritorio dentro del entorno virtual venv: 
 .\.venv\Scripts\python.exe .\A.I.D.py

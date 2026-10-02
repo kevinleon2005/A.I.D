@@ -1,0 +1,4 @@
+openpyxl
+PyPDF2
+extract-msg
+xlrd

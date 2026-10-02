@@ -21,10 +21,20 @@ try:
 except ImportError:
 	PdfReader = None
 
+try:
+	import extract_msg
+except ImportError:
+	extract_msg = None
+
+try:
+	import xlrd
+except ImportError:
+	xlrd = None
+
 SERVICE_NAME = "Nómina Electrónica"
 SERVICE_NOT_APPLICABLE_REQUIREMENTS = {"2.10", "2.11", "2.12", "4.3", "4.5"}
-NOT_APPLICABLE_OBSERVATION = "No aplica para el servicio implementado"
-SUPPORTED_EXTENSIONS = {".eml", ".pdf", ".xlsx", ".xls", ".doc", ".docx", ".zip"}
+NOT_APPLICABLE_OBSERVATION = "No aplica para el servicio implementado."
+SUPPORTED_EXTENSIONS = {".eml", ".msg", ".pdf", ".xlsx", ".xls", ".xlsm", ".doc", ".docx", ".zip"}
 ANALYST_HINTS = ("analista", "prueba", "software", "junior", "qa", "test")
 ANALYST_DOMAINS = ("dispapeles.com",)
 
@@ -116,6 +126,18 @@ def _read_eml(path):
 			parts.append(_html_to_text(part.get_content()))
 	return "\n".join(parts), sender
 
+def _read_msg(path):
+	if extract_msg is None:
+		return "", ""
+	message = extract_msg.Message(path)
+	try:
+		parts = [str(getattr(message, "subject", "") or ""), str(getattr(message, "sender", "") or ""), str(getattr(message, "to", "") or ""), str(getattr(message, "body", "") or "")]
+		return "\n".join(parts), str(getattr(message, "sender", "") or "")
+	finally:
+		close = getattr(message, "close", None)
+		if callable(close):
+			close()
+
 def _read_pdf(path):
 	if PdfReader is None:
 		return ""
@@ -145,13 +167,30 @@ def _read_xlsx(path):
 	finally:
 		workbook.close()
 
+def _read_xls(path):
+	if xlrd is None:
+		return ""
+	workbook = xlrd.open_workbook(path, on_demand=True)
+	try:
+		values = []
+		for sheet in workbook.sheets():
+			for row_index in range(sheet.nrows):
+				values.extend(str(value) for value in sheet.row_values(row_index) if value not in (None, ""))
+		return "\n".join(values)
+	finally:
+		workbook.release_resources()
+
 def _read_document(path):
 	extension = os.path.splitext(path)[1].lower()
 	if extension == ".eml":
 		return _read_eml(path)
+	if extension == ".msg":
+		return _read_msg(path), ""
 	if extension == ".pdf":
 		return _read_pdf(path), ""
-	if extension in {".xlsx", ".xls"}:
+	if extension == ".xls":
+		return _read_xls(path), ""
+	if extension in {".xlsx", ".xlsm"}:
 		return _read_xlsx(path), ""
 	return "", ""
 
@@ -164,7 +203,7 @@ def _collect_documents(client_path):
 			path = os.path.join(root, name)
 			try:
 				text, sender = _read_document(path)
-				is_email = os.path.splitext(name)[1].lower() == ".eml"
+				is_email = os.path.splitext(name)[1].lower() in {".eml", ".msg"}
 				documents.append({
 					"path": path,
 					"name": name,
@@ -520,15 +559,13 @@ def validate_uploaded_requirement_file(file_path, requirement):
 		return True, ""
 
 	if req_id == "4.1":
-		if ext in {".pdf", ".xlsx", ".xls"}:
-			if _document_contains_exact_code(file_path, ["PMO-ER-011"]):
-				return True, ""
-			return False, "El archivo cargado no contiene exactamente PMO-ER-011."
-		if ext == ".eml":
-			if _normalize_name(candidate_name) in normalized_name or "pmo er 011 cyp" in normalized_name:
-				return True, ""
-			return False, "El correo debe llevar el nombre PMO-ER-011 CyP."
-		return False, "La evidencia de 4.1 debe ser un archivo o correo con el nombre PMO-ER-011 CyP."
+		if ext not in {".eml", ".msg"}:
+			return False, "La evidencia de 4.1 debe ser un correo (.eml o .msg)."
+		if "pmo er 011 cyp" not in normalized_name:
+			return False, "El correo debe llevar PMO-ER-011 CyP en el nombre."
+		if not _email_contains_attachment_code(file_path, ["PMO-ER-011"], allowed_extensions={".xlsx", ".xls", ".xlsm"}, required_filename_text="PMO-ER-011"):
+			return False, "El correo debe incluir un Excel adjunto cuyo nombre contenga PMO-ER-011 y cuyo contenido tenga el código PMO-ER-011."
+		return True, ""
 
 	if req_id == "2.2":
 		if ext in {".xlsx", ".xls", ".pdf", ".doc", ".docx"}:
@@ -593,7 +630,7 @@ def _document_contains_exact_code(path, code_candidates):
 	extension = os.path.splitext(path)[1].lower()
 	if extension == ".pdf":
 		return True
-	if extension not in {".xlsx", ".xls"}:
+	if extension not in {".xlsx", ".xls", ".xlsm"}:
 		return False
 	return _text_contains_exact_code(path, code_candidates)
 
@@ -610,41 +647,63 @@ def _text_contains_exact_code(path, code_candidates):
 			return True
 	return False
 
-def _email_contains_attachment_code(path, code_candidates, allowed_extensions=None):
-	attachment_extensions = allowed_extensions or {".pdf", ".xlsx", ".xls", ".doc", ".docx"}
+def _email_contains_attachment_code(path, code_candidates, allowed_extensions=None, required_filename_text=None):
+	attachment_extensions = allowed_extensions or {".pdf", ".xlsx", ".xls", ".xlsm", ".doc", ".docx"}
 	content_type_extensions = {
 		"application/pdf": ".pdf",
 		"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
 		"application/vnd.ms-excel": ".xls",
+		"application/vnd.ms-excel.sheet.macroenabled.12": ".xlsm",
 		"application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
 		"application/msword": ".doc",
 	}
 	try:
-		with open(path, "rb") as source:
-			message = BytesParser(policy=policy.default).parse(source)
-		for part in message.walk():
-			if part.get_content_maintype() == "multipart":
-				continue
-			filename = part.get_filename() or ""
-			extension = os.path.splitext(filename)[1].lower()
-			if extension not in attachment_extensions:
-				extension = content_type_extensions.get(part.get_content_type(), "")
-			if not extension:
-				continue
-			payload = part.get_payload(decode=True)
+		attachments = []
+		if os.path.splitext(path)[1].lower() == ".msg":
+			if extract_msg is None:
+				return ""
+			message = extract_msg.Message(path)
+			try:
+				for attachment in message.attachments:
+					get_filename = getattr(attachment, "getFilename", None)
+					filename = getattr(attachment, "longFilename", None) or getattr(attachment, "shortFilename", None) or (get_filename() if callable(get_filename) else None) or getattr(attachment, "name", "") or ""
+					payload = getattr(attachment, "data", None)
+					attachments.append((filename, payload, str(getattr(attachment, "mimetype", "") or "")))
+			finally:
+				close = getattr(message, "close", None)
+				if callable(close):
+					close()
+		else:
+			with open(path, "rb") as source:
+				message = BytesParser(policy=policy.default).parse(source)
+			for part in message.walk():
+				if part.get_content_maintype() == "multipart":
+					continue
+				filename = part.get_filename() or ""
+				attachments.append((filename, part.get_payload(decode=True), part.get_content_type()))
+
+		for filename, payload, content_type in attachments:
 			if not payload:
 				continue
-			temporary = tempfile.NamedTemporaryFile(suffix=extension, delete=False)
-			temporary_path = temporary.name
+			if required_filename_text and _normalize_name(required_filename_text) not in _normalize_name(filename):
+				continue
+			extension = os.path.splitext(filename)[1].lower()
+			if extension not in attachment_extensions:
+				extension = content_type_extensions.get(content_type, "")
+			if not extension:
+				continue
+			temporary_path = None
 			try:
-				temporary.write(payload)
-				temporary.close()
+				with tempfile.NamedTemporaryFile(suffix=extension, delete=False) as temporary:
+					temporary_path = temporary.name
+					temporary.write(payload)
 				filename_matches = any(_normalize_name(code) in _normalize_name(filename) for code in code_candidates)
 				code_matches = _text_contains_exact_code(temporary_path, code_candidates)
-				if (extension == ".pdf" and (filename_matches or code_matches)) or (extension in {".xlsx", ".xls"} and code_matches):
+				if (extension == ".pdf" and (filename_matches or code_matches)) or (extension in {".xlsx", ".xls", ".xlsm"} and code_matches):
 					return filename or f"adjunto{extension}"
 			finally:
-				os.unlink(temporary_path)
+				if temporary_path and os.path.exists(temporary_path):
+					os.unlink(temporary_path)
 		return ""
 	except Exception:
 		return ""
@@ -713,6 +772,21 @@ def _has_project_size(client_path, target):
 def _project_size_for_2_1(client_path):
 	return _detect_project_size(client_path)
 
+def _small_medium_project_requirement_result(client_path, requirement):
+	if requirement.get("id") not in {"2.2", "2.8"}:
+		return None
+	size = _project_size_for_2_1(client_path)
+	if size not in {"pequeno", "mediano"}:
+		return None
+	return {
+		"id": requirement.get("id"),
+		"section": requirement.get("section"),
+		"folder": requirement.get("folder"),
+		"status": "NA",
+		"observation": f"No aplica porque es una implementación liviana.",
+		"path": None,
+	}
+
 def _propagate_not_applicable_override(manual_overrides, requirement_id):
 	if requirement_id not in {"2.11", "2.12"}:
 		return None
@@ -745,12 +819,15 @@ def evaluate_requirement(client_path, requirement, not_applicable=False, not_app
 		}
 
 	requirement_id = requirement.get("id")
+	size_result = _small_medium_project_requirement_result(client_path, requirement)
+	if size_result:
+		return size_result
 	if requirement_id == "2.2":
 		size = _project_size_for_2_1(client_path)
 		if size == "pequeno":
-			return {"id": requirement_id, "section": requirement.get("section"), "folder": requirement.get("folder"), "status": "NA", "observation": "No aplica porque es un cliente pequeño.", "path": None}
+			return {"id": requirement_id, "section": requirement.get("section"), "folder": requirement.get("folder"), "status": "NA", "observation": "No aplica porque es una implementación liviana..", "path": None}
 		if size == "mediano":
-			return {"id": requirement_id, "section": requirement.get("section"), "folder": requirement.get("folder"), "status": "NA", "observation": "No aplica porque es un cliente mediano.", "path": None}
+			return {"id": requirement_id, "section": requirement.get("section"), "folder": requirement.get("folder"), "status": "NA", "observation": "No aplica porque es una implementación liviana.", "path": None}
 		name = requirement.get("name", "")
 		matches = find_requirement_files(client_path, name, extensions={".pdf", ".xlsx", ".xls", ".doc", ".docx"})
 		for path in matches:
@@ -794,9 +871,9 @@ def evaluate_requirement(client_path, requirement, not_applicable=False, not_app
 	if requirement_id == "2.8":
 		size = _project_size_for_2_1(client_path)
 		if size == "pequeno":
-			return {"id": requirement_id, "section": requirement.get("section"), "folder": requirement.get("folder"), "status": "NA", "observation": "No aplica porque es un cliente pequeño.", "path": None}
+			return {"id": requirement_id, "section": requirement.get("section"), "folder": requirement.get("folder"), "status": "NA", "observation": "No aplica porque es una implementación liviana..", "path": None}
 		if size == "mediano":
-			return {"id": requirement_id, "section": requirement.get("section"), "folder": requirement.get("folder"), "status": "NA", "observation": "No aplica porque es un cliente mediano.", "path": None}
+			return {"id": requirement_id, "section": requirement.get("section"), "folder": requirement.get("folder"), "status": "NA", "observation": "No aplica porque es una implementación liviana.", "path": None}
 		if size != "grande":
 			return {"id": requirement_id, "section": requirement.get("section"), "folder": requirement.get("folder"), "status": "NA", "observation": "No aplica para este proyecto.", "path": None}
 		name = requirement.get("name", "")
@@ -832,19 +909,17 @@ def evaluate_requirement(client_path, requirement, not_applicable=False, not_app
 		return {"id": requirement_id, "section": requirement.get("section"), "folder": requirement.get("folder"), "status": "NO", "observation": "No se encontró el correo requerido: PMO-ER-010", "path": None}
 
 	if requirement_id == "4.1":
-		name = requirement.get("name", "")
-		file_matches = find_requirement_files(client_path, name, extensions={".pdf", ".xlsx", ".xls"})
-		email_matches = find_requirement_files(client_path, name, extensions={".eml"})
-		valid_file = next((path for path in file_matches if _document_contains_exact_code(path, ["PMO-ER-011"])), None)
-		if valid_file and email_matches:
-			return {"id": requirement_id, "section": requirement.get("section"), "folder": requirement.get("folder"), "status": "SI", "observation": f"Documento encontrado en: {_display_path(valid_file, client_path)}; correo encontrado en: {_display_path(email_matches[0], client_path)}", "path": valid_file}
-		if not valid_file and not file_matches:
-			observation = "No se encontró el archivo requerido PMO-ER-011 CyP."
-		elif not valid_file:
-			observation = "Se encontró el archivo PMO-ER-011 CyP., pero no contiene exactamente PMO-ER-011."
+		implementation_dir = _find_subdirectory(client_path, "IMPLEMENTACIONES")
+		output_dir = _find_subdirectory(implementation_dir, "SALIDA EN VIVO") if implementation_dir else None
+		email_matches = find_requirement_files(output_dir, "PMO-ER-011 CyP", extensions={".eml", ".msg"}) if output_dir else []
+		valid_email = next((path for path in email_matches if _email_contains_attachment_code(path, ["PMO-ER-011"], allowed_extensions={".xlsx", ".xls", ".xlsm"}, required_filename_text="PMO-ER-011")), None)
+		if valid_email:
+			return {"id": requirement_id, "section": requirement.get("section"), "folder": requirement.get("folder"), "status": "SI", "observation": f"Correo y Excel adjunto válidos en: {_display_path(valid_email, client_path)}", "path": valid_email}
+		if email_matches:
+			observation = "Se encontró un correo PMO-ER-011 CyP en SALIDA EN VIVO, pero no tiene un Excel adjunto con ese nombre y el código PMO-ER-011."
 		else:
-			observation = "Se encontró el archivo PMO-ER-011 CyP., pero no el correo cuyo nombre contiene PMO-ER-011 CyP."
-		return {"id": requirement_id, "section": requirement.get("section"), "folder": requirement.get("folder"), "status": "NO", "observation": observation, "path": valid_file or (file_matches[0] if file_matches else None)}
+			observation = "No se encontró en IMPLEMENTACIONES/SALIDA EN VIVO un correo con nombre PMO-ER-011 CyP."
+		return {"id": requirement_id, "section": requirement.get("section"), "folder": requirement.get("folder"), "status": "NO", "observation": observation, "path": email_matches[0] if email_matches else None}
 
 	if requirement_id == "2.12":
 		matches = find_requirement_files(client_path, "MAPEO DE DATOS", extensions={".eml"})
@@ -900,6 +975,10 @@ def evaluate_all_requirements(client_path, manual_overrides=None):
 	results = []
 	for requirement in REQUIREMENT_CATALOG:
 		requirement_id = requirement.get("id")
+		size_result = _small_medium_project_requirement_result(client_path, requirement)
+		if size_result:
+			results.append(size_result)
+			continue
 		override = manual_overrides.get(requirement_id, {}) if isinstance(manual_overrides, dict) else {}
 		propagated_override = _propagate_not_applicable_override(manual_overrides, requirement_id)
 		if propagated_override:
@@ -922,15 +1001,13 @@ def evaluate_all_requirements(client_path, manual_overrides=None):
 				"path": None,
 			})
 			continue
-		if requirement_id == "4.1" and override.get("paths"):
-			file_paths = [path for path in override["paths"] if os.path.splitext(path)[1].lower() in {".pdf", ".xlsx", ".xls"}]
-			email_paths = [path for path in override["paths"] if os.path.splitext(path)[1].lower() == ".eml"]
-			valid_file = next((path for path in file_paths if _normalize_name(requirement.get("name", "")) in _normalize_name(os.path.basename(path)) and _document_contains_exact_code(path, ["PMO-ER-011"])), None)
-			valid_email = next((path for path in email_paths if _normalize_name(requirement.get("name", "")) in _normalize_name(os.path.basename(path))), None)
-			if valid_file and valid_email:
-				results.append({"id": requirement_id, "section": requirement.get("section"), "folder": requirement.get("folder"), "status": "SI", "observation": f"Archivo cargado: {valid_file}; correo cargado: {valid_email}", "path": valid_file})
+		if requirement_id == "4.1" and override.get("path"):
+			manual_email = override["path"]
+			attachment = _email_contains_attachment_code(manual_email, ["PMO-ER-011"], allowed_extensions={".xlsx", ".xls", ".xlsm"}, required_filename_text="PMO-ER-011") if os.path.splitext(manual_email)[1].lower() in {".eml", ".msg"} and "pmo er 011 cyp" in _normalize_name(os.path.basename(manual_email)) else ""
+			if attachment:
+				results.append({"id": requirement_id, "section": requirement.get("section"), "folder": requirement.get("folder"), "status": "SI", "observation": f"Correo cargado: {manual_email}; Excel adjunto válido: {attachment}", "path": manual_email})
 			else:
-				results.append({"id": requirement_id, "section": requirement.get("section"), "folder": requirement.get("folder"), "status": "NO", "observation": "La carga manual de 4.1 debe incluir un archivo válido y un correo PMO-ER-011 CyP.", "path": valid_file or valid_email})
+				results.append({"id": requirement_id, "section": requirement.get("section"), "folder": requirement.get("folder"), "status": "NO", "observation": "El correo cargado no cumple con el nombre y el Excel adjunto requeridos para 4.1.", "path": manual_email})
 			continue
 		if override.get("path"):
 			manual_result = evaluate_requirement(client_path, requirement)

@@ -68,7 +68,7 @@ REQUIREMENT_CATALOG = [
 	{"id": "2.9", "section": "PRELIMINARES", "folder": "IMPLEMENTACIONES/PRELIMINARES", "name": "CAPACITACIÓN", "kind": "email", "code_candidates": [], "allow_na": False, "location": "{cliente}/IMPLEMENTACIONES/PRELIMINARES"},
 	{"id": "2.10", "section": "PRELIMINARES", "folder": "IMPLEMENTACIONES/PRELIMINARES", "name": "ARTES", "kind": "document", "code_candidates": [], "allow_na": True, "location": "{cliente}/IMPLEMENTACIONES/PRELIMINARES"},
 	{"id": "2.11", "section": "PRELIMINARES", "folder": "IMPLEMENTACIONES/PRELIMINARES", "name": "APROBACIÓN ARTES", "kind": "email", "code_candidates": [], "allow_na": True, "location": "{cliente}/IMPLEMENTACIONES/PRELIMINARES"},
-	{"id": "2.12", "section": "PRELIMINARES", "folder": "IMPLEMENTACIONES/PRELIMINARES", "name": "MAPEO DE DATOS", "kind": "email", "code_candidates": [], "allow_na": True, "location": "{cliente}/IMPLEMENTACIONES/PRELIMINARES"},
+	{"id": "2.12", "section": "PRELIMINARES", "folder": "IMPLEMENTACIONES/PRELIMINARES", "name": "MAPEO DE DATOS", "kind": "document", "code_candidates": [], "allow_na": True, "location": "{cliente}/IMPLEMENTACIONES/PRELIMINARES"},
 	{"id": "3.1", "section": "SALIDA EN VIVO", "folder": "IMPLEMENTACIONES/SALIDA EN VIVO", "name": "PMO-ER-010", "kind": "email", "code_candidates": ["PMO-ER-010"], "allow_na": False, "location": "{cliente}/IMPLEMENTACIONES/SALIDA EN VIVO"},
 	{"id": "3.2", "section": "SALIDA EN VIVO", "folder": "IMPLEMENTACIONES/SALIDA EN VIVO", "name": "APROBACIÓN PRUEBAS CLIENTE", "kind": "email", "code_candidates": [], "allow_na": False, "location": "{cliente}/IMPLEMENTACIONES/SALIDA EN VIVO"},
 	{"id": "4.1", "section": "SALIDA EN VIVO", "folder": "IMPLEMENTACIONES/SALIDA EN VIVO", "name": "PMO-ER-011 CyP.", "kind": "document", "code_candidates": ["PMO-ER-011"], "allow_na": True, "location": "{cliente}/IMPLEMENTACIONES/SALIDA EN VIVO"},
@@ -574,18 +574,18 @@ def validate_uploaded_requirement_file(file_path, requirement):
 			return False, "El archivo debe llevar el nombre de PMO-MD-002 Project Charter."
 		return False, "El archivo requerido para 2.2 debe ser un PDF o Excel válido."
 
-	if req_id == "2.12":
-		if ext.lower() not in {".png", ".jpg", ".jpeg"}:
-			return False, "La evidencia de 2.12 debe ser una imagen PNG con nombre que incluya Mapeo_de_datos."
-		if "mapeo de datos" not in normalized_name and "mapeo_de_datos" not in normalized_name:
-			return False, "La imagen debe llevar el nombre Mapeo_de_datos."
+	if req_id == "2.10":
+		if ext != ".png":
+			return False, "La evidencia de 2.10 debe ser una imagen PNG llamada Artes."
+		if _normalize_name(os.path.splitext(name)[0]) != "artes":
+			return False, "La imagen de 2.10 debe llamarse exactamente Artes.png."
 		return True, ""
 
 	if req_id == "2.11":
-		if ext != ".eml":
-			return False, "La evidencia de 2.11 debe ser un correo (.eml)."
-		if "informe de adjudicacion" not in normalized_name:
-			return False, "El correo cargado debe contener 'INFORME DE ADJUDICACION' en el nombre."
+		if ext not in {".eml", ".msg"}:
+			return False, "La evidencia de 2.11 debe ser un correo (.eml o .msg)."
+		if "correo aprobacion artes" not in normalized_name:
+			return False, "El correo debe llevar 'Correo Aprobación Artes' en el nombre."
 		return True, ""
 
 	if req_id == "2.12":
@@ -826,33 +826,31 @@ def evaluate_requirement(client_path, requirement, not_applicable=False, not_app
 			return {"id": requirement_id, "section": requirement.get("section"), "folder": requirement.get("folder"), "status": "NO", "observation": f"Se encontró {os.path.basename(matches[0])}, pero no contiene exactamente PMO-MD-002.", "path": matches[0]}
 		return {"id": requirement_id, "section": requirement.get("section"), "folder": requirement.get("folder"), "status": "NO", "observation": "No se encontró el Project Charter requerido.", "path": None}
 
-	if requirement_id == "2.12":
-		artes_dir = os.path.join(client_path, "IMPLEMENTACIONES", "PRELIMINARES", "ARTES")
-		matches = []
-		if os.path.isdir(artes_dir):
-			for root, _, files in os.walk(artes_dir):
-				for file_name in files:
-					if os.path.splitext(file_name)[1].lower() in {".png", ".jpg", ".jpeg"} and "factura" in _normalize_name(file_name):
-						matches.append(os.path.join(root, file_name))
-		if matches:
-			return {"id": requirement_id, "section": requirement.get("section"), "folder": requirement.get("folder"), "status": "SI", "observation": f"Documento encontrado en: {_display_path(matches[0], client_path)}", "path": matches[0]}
-		return {"id": requirement_id, "section": requirement.get("section"), "folder": requirement.get("folder"), "status": "NO", "observation": "No se encontró la o las PNG con nombre Factura_# en la carpeta ARTES.", "path": None}
+	if requirement_id == "2.10":
+		implementation_dir = _find_subdirectory(client_path, "IMPLEMENTACIONES")
+		preliminaries_dir = _find_subdirectory(implementation_dir, "PRELIMINARES") if implementation_dir else None
+		if preliminaries_dir:
+			arts_dir = _find_subdirectory(preliminaries_dir, "ARTES")
+			if arts_dir:
+				return {"id": requirement_id, "section": requirement.get("section"), "folder": requirement.get("folder"), "status": "SI", "observation": f"Carpeta Artes encontrada en: {_display_path(arts_dir, client_path)}", "path": arts_dir}
+			for file_name in os.listdir(preliminaries_dir):
+				file_path = os.path.join(preliminaries_dir, file_name)
+				if os.path.isfile(file_path) and os.path.splitext(file_name)[1].lower() == ".png" and _normalize_name(os.path.splitext(file_name)[0]) == "artes":
+					return {"id": requirement_id, "section": requirement.get("section"), "folder": requirement.get("folder"), "status": "SI", "observation": f"Imagen Artes encontrada en: {_display_path(file_path, client_path)}", "path": file_path}
+		return {"id": requirement_id, "section": requirement.get("section"), "folder": requirement.get("folder"), "status": "NO", "observation": "No se encontró una carpeta Artes ni el archivo Artes.png en IMPLEMENTACIONES/PRELIMINARES.", "path": None}
 
 	if requirement_id == "2.11":
-		artes_dir = os.path.join(client_path, "IMPLEMENTACIONES", "PRELIMINARES", "ARTES")
-		matches = find_requirement_files(artes_dir, "CORREO APROBACIÓN ARTES", extensions={".eml"})
+		implementation_dir = _find_subdirectory(client_path, "IMPLEMENTACIONES")
+		preliminaries_dir = _find_subdirectory(implementation_dir, "PRELIMINARES") if implementation_dir else None
+		matches = find_requirement_files(preliminaries_dir, "CORREO APROBACIÓN ARTES", extensions={".eml", ".msg"})
 		if matches:
 			return {"id": requirement_id, "section": requirement.get("section"), "folder": requirement.get("folder"), "status": "SI", "observation": f"Correo encontrado en: {_display_path(matches[0], client_path)}", "path": matches[0]}
 		return {"id": requirement_id, "section": requirement.get("section"), "folder": requirement.get("folder"), "status": "NO", "observation": "No se encontró el correo requerido: CORREO APROBACIÓN ARTES.", "path": None}
 
 	if requirement_id == "2.12":
-		artes_dir = os.path.join(client_path, "IMPLEMENTACIONES", "PRELIMINARES", "ARTES")
-		matches = []
-		if os.path.isdir(artes_dir):
-			for root, _, files in os.walk(artes_dir):
-				for file_name in files:
-					if os.path.splitext(file_name)[1].lower() in {".png", ".jpg", ".jpeg"} and ("mapeo de datos" in _normalize_name(file_name) or "mapeo_de_datos" in _normalize_name(file_name)):
-						matches.append(os.path.join(root, file_name))
+		implementation_dir = _find_subdirectory(client_path, "IMPLEMENTACIONES")
+		preliminaries_dir = _find_subdirectory(implementation_dir, "PRELIMINARES") if implementation_dir else None
+		matches = find_requirement_files(preliminaries_dir, "MAPEO DE DATOS", extensions={".png", ".jpg", ".jpeg"})
 		if matches:
 			return {"id": requirement_id, "section": requirement.get("section"), "folder": requirement.get("folder"), "status": "SI", "observation": f"PNG encontrado en: {_display_path(matches[0], client_path)}", "path": matches[0]}
 		return {"id": requirement_id, "section": requirement.get("section"), "folder": requirement.get("folder"), "status": "NO", "observation": "No se encontró la PNG requerida: Mapeo_de_datos.", "path": None}
